@@ -1,0 +1,10 @@
+UltraShip U-2 MQTT Bridge
+=========================
+
+The original USB-serial UltraShip U-2 packet decoder was written by Timothy
+Twillman in 2012 and distributed under the BSD 2-Clause License. Its copyright
+notice and license text are preserved in `ultraship_u2v2.py` and `LICENSE`.
+
+The Python 3 port, continuous ASCII protocol support, MQTT/Home Assistant
+bridge, Moonraker pause monitor, service files, tests, and documentation were
+added in 2026 by the UltraShip U-2 MQTT contributors under the same license.

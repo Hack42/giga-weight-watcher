@@ -1,4 +1,5 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
 
 """
 ultraship_u2v2_serial.py
@@ -37,15 +38,23 @@ those of the authors and should not be interpreted as representing official
 policies, either expressed or implied, of Timothy Twillman.
 """
 
+import argparse
+import re
 import struct
+import sys
 
 
-class UltrashipU2v2(object):
+PACKET_SIZE = 14
+CONTINUOUS_PAYLOAD_SIZE = 0x0B
+WEIGHT_RE = re.compile(r'[+-]?\s*\d+(?:\.\d+)?')
+
+
+class UltrashipU2v2:
 
     """Class for interfacing with USB-Serial version of UltraShip U2 scales.
 
-    This handles reading / parsing packets sent by the scale when the "SEND"
-    button is pushed.
+    This handles packets sent on demand with "SEND" as well as packets emitted
+    automatically when the scale is configured for continuous mode.
 
     Note: It is not able to request data from the scale, or to get any more
     information than what is displayed on the top line of the display, and
@@ -59,18 +68,50 @@ class UltrashipU2v2(object):
         """Initialize the scale object."""
         port.baudrate = 9600
         self._port = port
-        self._buf = ''
+        self._buf = bytearray()
 
     def fill_buffer(self):
-        c = self._port.read(14 - len(self._buf))
-        self._buf += c
+        c = self._port.read(PACKET_SIZE - len(self._buf))
+        self._buf.extend(c)
 
     @staticmethod
-    def parse_packet(pkt):
-        """Parse a scale packet & return the parsed value, or None if invalid.
+    def parse_continuous_packet(pkt):
+        """Parse the plain ASCII packet emitted in continuous mode.
+
+        Observed packet layout::
+
+            02 0b 44 20 20 20 30 2e 34 34 36 4b 4b 03
+            STX 11          D   0.446KK             ETX
+
+        Byte 1 specifies the 11-byte ASCII payload size. The status/unit bytes
+        around the number are retained by the scale protocol but are not part
+        of the returned weight.
+        """
+        if len(pkt) < PACKET_SIZE:
+            return None
+        packet = bytes(pkt[:PACKET_SIZE])
+        if not (
+                packet[0] == 0x02
+                and packet[1] == CONTINUOUS_PAYLOAD_SIZE
+                and packet[13] == 0x03):
+            return None
+
+        try:
+            payload = packet[2:13].decode('ascii')
+        except UnicodeDecodeError:
+            return None
+
+        match = WEIGHT_RE.search(payload)
+        if match is None:
+            return None
+        return match.group(0).replace(' ', '')
+
+    @staticmethod
+    def parse_legacy_packet(pkt):
+        """Parse the older encrypted/checksummed U-2 v2 packet format.
 
         Args:
-            pkt:  A 14-character string; should hold 1 packet of scale information.
+            pkt: A bytes-like object containing one 14-byte scale packet.
 
         Returns:
             A string containing the packet's decoded contents, or None if the
@@ -88,19 +129,30 @@ class UltrashipU2v2(object):
         Checksum is calculated by simply adding together all of the bytes
         from index 1..10, before decoding with the key.
         """
-        if len(pkt) >= 14:
+        if len(pkt) >= PACKET_SIZE:
             # The H is for the (big endian, 2-byte) checksum.
-            data = struct.unpack('>BBBBBBBBBBBHB', pkt[0:14])
+            data = struct.unpack('>BBBBBBBBBBBHB', pkt[0:PACKET_SIZE])
 
             if data[0] == 0x02 and data[12] == 0x03 and sum(data[1:11]) == data[11]:
                 # Decode data bytes
                 key = data[1] ^ 0x26
                 # data[2] is a newline; toss it out.
-                data = [ (data[i] ^ key) for i in range(3, 11) ]
+                data = [(data[i] ^ key) for i in range(3, 11)]
 
-                return struct.pack('BBBBBBBB', *data)
+                try:
+                    return struct.pack('BBBBBBBB', *data).decode('ascii')
+                except UnicodeDecodeError:
+                    return None
 
         return None
+
+    @classmethod
+    def parse_packet(cls, pkt):
+        """Parse either continuous ASCII or legacy encrypted scale data."""
+        result = cls.parse_continuous_packet(pkt)
+        if result is not None:
+            return result
+        return cls.parse_legacy_packet(pkt)
 
     def read(self):
         """Read a (decoded) packet's worth of data from the scale.
@@ -111,49 +163,68 @@ class UltrashipU2v2(object):
         while True:
             self.fill_buffer()
 
-            # Dump characters until find STX
-            self._buf = self._buf[self._buf.find('\x02'):]
+            # Dump characters until finding the packet's STX byte.
+            start = self._buf.find(b'\x02')
+            if start < 0:
+                self._buf.clear()
+                continue
+            del self._buf[:start]
 
-            while len(self._buf) >= 14:
+            while len(self._buf) >= PACKET_SIZE:
                 # Try to parse the packet... hopefully it's valid.
                 result = self.parse_packet(self._buf)
-                if result:
-                    self._buf = self._buf[14:]
+                if result is not None:
+                    del self._buf[:PACKET_SIZE]
                     return result
                 else:
                     # Bad packet.  Dump everything up to next STX and
                     # continue looking for a valid packet.
-                    self._buf = self._buf[self._buf.find('\x02', 1):]
+                    next_start = self._buf.find(b'\x02', 1)
+                    if next_start < 0:
+                        self._buf.clear()
+                        break
+                    del self._buf[:next_start]
+
 
 def main():
     """Basic main function for getting data from a scale and printing it out.
 
-    To use, pass the device name of the USB port the scale is on
-    (e.g. /dev/ttyACM0) on the command line.  When the "SEND" button on the
-    scale is pressed, the program should output the number that is on the
-    scale's display.
+    Pass the USB serial device name on the command line, or omit it to use
+    /dev/ttyUSB0. The program outputs the number shown on the scale's display.
     """
     import serial
-    import optparse
-    import sys
 
-    parser = optparse.OptionParser()
-    (opts, args) = parser.parse_args()
+    parser = argparse.ArgumentParser(
+        description='Read a My Weigh UltraShip U-2 v2 over USB serial.'
+    )
+    parser.add_argument(
+        'device', nargs='?', default='/dev/ttyUSB0',
+        help='serial device (default: /dev/ttyUSB0)',
+    )
+    parser.add_argument(
+        '--changes-only', action='store_true',
+        help='only print when the measured value changes',
+    )
+    args = parser.parse_args()
 
-    if not args:
-        print >> sys.stderr, 'Please provide a device name on the command line.'
-        sys.exit(1)
+    try:
+        with serial.Serial(args.device, 9600) as port:
+            scale = UltrashipU2v2(port)
+            previous = None
+            print('Listening on {} at 9600 8N1...'.format(args.device),
+                  file=sys.stderr)
+            while True:
+                reading = scale.read()
+                if not args.changes_only or reading != previous:
+                    print(reading, flush=True)
+                previous = reading
+    except serial.SerialException as error:
+        print('Cannot open {}: {}'.format(args.device, error), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print('\nStopped.', file=sys.stderr)
+        return 0
 
-    port = serial.Serial(args[0])
-    scale = UltrashipU2v2(port)
-
-    while True:
-        try:
-            print "%s" % (scale.read())
-        except KeyboardInterrupt:
-            print >> sys.stderr, "Caught CTRL-C; exiting..."
-            sys.exit(0)
 
 if __name__ == '__main__':
-    main()
-
+    raise SystemExit(main())

@@ -1,0 +1,16 @@
+[Unit]
+Description=UltraShip U-2 MQTT bridge and print pause monitor
+Documentation=https://github.com/Hack42/giga-weight-watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/ultraship-u2-mqtt.env
+ExecStart=%h/.local/bin/ultraship-u2-mqtt
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
