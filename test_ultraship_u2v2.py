@@ -39,6 +39,21 @@ class PacketTest(unittest.TestCase):
     def test_observed_continuous_packet(self):
         packet = b'\x02\x0bD   0.446KK\x03'
         self.assertEqual(UltrashipU2v2.parse_packet(packet), '0.446')
+        self.assertEqual(
+            UltrashipU2v2.parse_measurement(packet), ('0.446', 'kg')
+        )
+
+    def test_continuous_unit_codes(self):
+        packets = {
+            b'\x02\x0bD     446GG\x03': ('446', 'g'),
+            b'\x02\x0bD  16.000OO\x03': ('16.000', 'oz'),
+            b'\x02\x0bD   1.000LL\x03': ('1.000', 'lb'),
+        }
+        for packet, expected in packets.items():
+            with self.subTest(unit=expected[1]):
+                self.assertEqual(
+                    UltrashipU2v2.parse_measurement(packet), expected
+                )
 
     def test_negative_continuous_packet(self):
         packet = b'\x02\x0bD  -0.125KK\x03'
@@ -53,6 +68,11 @@ class PacketTest(unittest.TestCase):
         packet = b'\x02\x0bD   0.446KK\x03'
         scale = UltrashipU2v2(FakePort(b'0.446KK\x03' + packet))
         self.assertEqual(scale.read(), '0.446')
+
+    def test_read_measurement_returns_detected_unit(self):
+        packet = b'\x02\x0bD     446GG\x03'
+        scale = UltrashipU2v2(FakePort(packet))
+        self.assertEqual(scale.read_measurement(), ('446', 'g'))
 
 
 if __name__ == '__main__':

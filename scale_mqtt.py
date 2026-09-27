@@ -18,6 +18,12 @@ from ultraship_u2v2 import UltrashipU2v2
 
 
 LOG = logging.getLogger('scale_mqtt')
+GRAMS_PER_UNIT = {
+    'g': Decimal('1'),
+    'kg': Decimal('1000'),
+    'oz': Decimal('28.349523125'),
+    'lb': Decimal('453.59237'),
+}
 
 
 def env_bool(name, default=False):
@@ -30,11 +36,11 @@ def env_bool(name, default=False):
 def reading_to_grams(reading, input_unit):
     """Convert a scale reading to grams without floating-point rounding."""
     value = Decimal(reading.strip())
-    if input_unit == 'kg':
-        value *= Decimal(1000)
-    elif input_unit != 'g':
+    try:
+        factor = GRAMS_PER_UNIT[input_unit.lower()]
+    except KeyError:
         raise ValueError('unsupported input unit: {}'.format(input_unit))
-    return value
+    return value * factor
 
 
 def format_grams(grams):
@@ -320,13 +326,18 @@ def run(args, stop_event):
                 first_reading = True
 
                 while not stop_event.is_set():
-                    raw_reading = scale.read()
-                    grams = reading_to_grams(raw_reading, args.input_unit)
+                    raw_reading, detected_unit = scale.read_measurement()
+                    input_unit = detected_unit or args.input_unit
+                    grams = reading_to_grams(raw_reading, input_unit)
                     now = time.monotonic()
 
                     if first_reading:
-                        LOG.info('Scale connected; first reading %s g',
-                                 format_grams(grams))
+                        LOG.info(
+                            'Scale connected; first reading %s %s (%s g)',
+                            raw_reading,
+                            input_unit,
+                            format_grams(grams),
+                        )
                         publisher.set_scale_available(True)
                         first_reading = False
 
@@ -373,9 +384,13 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description='Publish an UltraShip U-2 scale to MQTT and Home Assistant.'
     )
-    parser.add_argument('--device', default=os.getenv('SCALE_DEVICE', '/dev/ttyUSB0'))
     parser.add_argument(
-        '--input-unit', choices=('kg', 'g'), default=os.getenv('INPUT_UNIT', 'kg')
+        '--device', default=os.getenv('SCALE_DEVICE', '/dev/ultraship-u2')
+    )
+    parser.add_argument(
+        '--input-unit', choices=('kg', 'g', 'oz', 'lb'),
+        default=os.getenv('INPUT_UNIT', 'kg'),
+        help='fallback unit when the serial packet has no unit (default: kg)',
     )
     parser.add_argument(
         '--mqtt-host', default=os.getenv('MQTT_HOST', 'localhost')

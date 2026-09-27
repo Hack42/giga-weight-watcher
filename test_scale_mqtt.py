@@ -30,12 +30,25 @@ class ConversionTest(unittest.TestCase):
     def test_gram_input(self):
         self.assertEqual(reading_to_grams('123.5', 'g'), Decimal('123.5'))
 
+    def test_ounce_to_grams(self):
+        self.assertEqual(
+            reading_to_grams('16', 'oz'), Decimal('453.592370000')
+        )
+
+    def test_pound_to_grams(self):
+        self.assertEqual(reading_to_grams('1', 'lb'), Decimal('453.59237'))
+
     def test_payload_format(self):
         self.assertEqual(format_grams(Decimal('448.000')), '448')
         self.assertEqual(format_grams(Decimal('448.5')), '448.5')
 
 
 class PublishingTest(unittest.TestCase):
+    def test_stable_device_is_the_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            args = parse_args([])
+        self.assertEqual(args.device, '/dev/ultraship-u2')
+
     def test_boolean_environment_setting(self):
         with patch.dict(os.environ, {'MQTT_TLS': 'yes'}):
             self.assertTrue(env_bool('MQTT_TLS'))

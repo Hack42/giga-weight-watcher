@@ -16,8 +16,10 @@ Offset  Hex                                               ASCII
 ```
 
 The reader validates framing and payload length, decodes the ASCII payload,
-and extracts the signed decimal number. Unit conversion is configured by the
-user because the numeric field itself does not unambiguously describe its unit.
+and extracts the signed decimal number. The final two payload bytes encode the
+units selected for the two display lines. The transmitted value uses the first
+code: `K` for kilograms, `G` for grams, `O` for ounces, and `L` for decimal
+pounds. The MQTT bridge converts all four units to grams.
 
 ## Legacy encrypted format
 

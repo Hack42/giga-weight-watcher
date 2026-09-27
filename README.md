@@ -20,6 +20,7 @@ several Elegoo printer controllers.
 
 - Supports the legacy encrypted/checksummed U-2 v2 protocol.
 - Supports the plain 14-byte ASCII protocol used in continuous mode.
+- Detects kilogram, gram, ounce, and pound modes and publishes all as grams.
 - Re-synchronizes after truncated or malformed serial data.
 - Reopens the USB device automatically after disconnects.
 - Reconnects to MQTT automatically and uses retained state and availability.
@@ -39,7 +40,9 @@ several Elegoo printer controllers.
 - Optional: Moonraker for automatic print pausing
 
 Known USB-serial revisions use PL2303 or CH340 adapters and normally appear as
-`/dev/ttyUSB0`. The older USB HID revision is not supported.
+`/dev/ttyUSB0`. The included udev rule gives the observed CH340 revision the
+stable name `/dev/ultraship-u2`, even when its `ttyUSB` number changes after a
+reboot. The older USB HID revision is not supported.
 
 ## Installation
 
@@ -50,6 +53,18 @@ git clone https://github.com/Hack42/giga-weight-watcher.git
 cd giga-weight-watcher
 python3 -m pip install --user .
 ```
+
+Install the udev rule for a stable serial-device name:
+
+```console
+sudo install -m 0644 udev/99-ultraship-u2.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=tty
+ls -l /dev/ultraship-u2
+```
+
+The rule matches the CH340 adapter with USB ID `1a86:7523`. Unplug and reconnect
+the scale if the symlink does not appear immediately.
 
 Make sure `~/.local/bin` is in `PATH`. Two commands are installed:
 
@@ -70,7 +85,7 @@ sudo usermod -aG dialout "$USER"
 Read the raw display value before setting up MQTT:
 
 ```console
-ultraship-u2-read /dev/ttyUSB0
+ultraship-u2-read /dev/ultraship-u2
 ```
 
 In continuous mode the scale sends data automatically. In on-demand mode,
@@ -89,8 +104,8 @@ Edit at least `MQTT_HOST`. The most relevant settings are:
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
-| `SCALE_DEVICE` | `/dev/ttyUSB0` | USB serial device |
-| `INPUT_UNIT` | `kg` | Unit shown by the scale (`kg` or `g`) |
+| `SCALE_DEVICE` | `/dev/ultraship-u2` | Stable USB serial device |
+| `INPUT_UNIT` | `kg` | Fallback for packets without a unit |
 | `MQTT_HOST` | `localhost` | MQTT broker hostname |
 | `MQTT_PORT` | `1883` | MQTT broker port |
 | `MQTT_TOPIC` | `ultraship-u2/scale` | Base topic |
@@ -109,6 +124,11 @@ Edit at least `MQTT_HOST`. The most relevant settings are:
 
 Command-line arguments override the built-in defaults. Environment variables
 are convenient for the systemd service.
+
+Continuous packets identify their display unit automatically. The bridge
+supports `kg`, `g`, `oz`, and decimal `lb`, converts them to grams, and then
+averages and publishes the result. `INPUT_UNIT` is only used for the legacy
+packet format, which does not contain a usable unit code.
 
 ## Safe first run
 

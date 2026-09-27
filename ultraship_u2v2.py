@@ -47,6 +47,12 @@ import sys
 PACKET_SIZE = 14
 CONTINUOUS_PAYLOAD_SIZE = 0x0B
 WEIGHT_RE = re.compile(r'[+-]?\s*\d+(?:\.\d+)?')
+UNIT_CODES = {
+    'G': 'g',
+    'K': 'kg',
+    'L': 'lb',
+    'O': 'oz',
+}
 
 
 class UltrashipU2v2:
@@ -75,17 +81,18 @@ class UltrashipU2v2:
         self._buf.extend(c)
 
     @staticmethod
-    def parse_continuous_packet(pkt):
-        """Parse the plain ASCII packet emitted in continuous mode.
+    def parse_continuous_measurement(pkt):
+        """Parse a value and unit from a plain continuous-mode packet.
 
         Observed packet layout::
 
             02 0b 44 20 20 20 30 2e 34 34 36 4b 4b 03
             STX 11          D   0.446KK             ETX
 
-        Byte 1 specifies the 11-byte ASCII payload size. The status/unit bytes
-        around the number are retained by the scale protocol but are not part
-        of the returned weight.
+        Byte 1 specifies the 11-byte ASCII payload size. The first payload byte
+        is status information, the next eight bytes contain the value, and the
+        final two bytes describe the two display units. The transmitted value
+        uses the first display unit.
         """
         if len(pkt) < PACKET_SIZE:
             return None
@@ -104,7 +111,20 @@ class UltrashipU2v2:
         match = WEIGHT_RE.search(payload)
         if match is None:
             return None
-        return match.group(0).replace(' ', '')
+
+        value = match.group(0).replace(' ', '')
+        unit = UNIT_CODES.get(payload[-2].upper())
+        if unit is None:
+            unit = UNIT_CODES.get(payload[-1].upper())
+        return value, unit
+
+    @classmethod
+    def parse_continuous_packet(cls, pkt):
+        """Parse the value from a plain continuous-mode packet."""
+        measurement = cls.parse_continuous_measurement(pkt)
+        if measurement is None:
+            return None
+        return measurement[0]
 
     @staticmethod
     def parse_legacy_packet(pkt):
@@ -154,11 +174,26 @@ class UltrashipU2v2:
             return result
         return cls.parse_legacy_packet(pkt)
 
-    def read(self):
-        """Read a (decoded) packet's worth of data from the scale.
+    @classmethod
+    def parse_measurement(cls, pkt):
+        """Parse a packet into ``(value, unit)``.
+
+        Legacy packets do not carry a usable unit and therefore return
+        ``None`` as their unit.
+        """
+        result = cls.parse_continuous_measurement(pkt)
+        if result is not None:
+            return result
+        value = cls.parse_legacy_packet(pkt)
+        if value is None:
+            return None
+        return value, None
+
+    def read_measurement(self):
+        """Read a decoded ``(value, unit)`` measurement from the scale.
 
         This will keep reading bytes until it gets a valid packet, then will
-        decode the packet and return the decoded contents (a string).
+        decode the packet and return its numeric text and detected unit.
         """
         while True:
             self.fill_buffer()
@@ -172,7 +207,7 @@ class UltrashipU2v2:
 
             while len(self._buf) >= PACKET_SIZE:
                 # Try to parse the packet... hopefully it's valid.
-                result = self.parse_packet(self._buf)
+                result = self.parse_measurement(self._buf)
                 if result is not None:
                     del self._buf[:PACKET_SIZE]
                     return result
@@ -185,12 +220,17 @@ class UltrashipU2v2:
                         break
                     del self._buf[:next_start]
 
+    def read(self):
+        """Read only the display value, preserving the original API."""
+        return self.read_measurement()[0]
+
 
 def main():
     """Basic main function for getting data from a scale and printing it out.
 
     Pass the USB serial device name on the command line, or omit it to use
-    /dev/ttyUSB0. The program outputs the number shown on the scale's display.
+    /dev/ultraship-u2. The program outputs the number shown on the scale's
+    display.
     """
     import serial
 
@@ -198,8 +238,8 @@ def main():
         description='Read a My Weigh UltraShip U-2 v2 over USB serial.'
     )
     parser.add_argument(
-        'device', nargs='?', default='/dev/ttyUSB0',
-        help='serial device (default: /dev/ttyUSB0)',
+        'device', nargs='?', default='/dev/ultraship-u2',
+        help='serial device (default: /dev/ultraship-u2)',
     )
     parser.add_argument(
         '--changes-only', action='store_true',
